@@ -1,9 +1,10 @@
-import express from 'express'
-import 'dotenv/config'
+const express = require('express')
+require('dotenv').config()
+const fetch = require('node-fetch') // Install with `npm install node-fetch@2`
 
 const app = express()
 const port = 3000
-const TESTING = true // Toggle this to false for production
+const TESTING = false // Toggle to false for production
 
 const nightscoutUrl = process.env.NIGHTSCOUT_API_URL
 const goveeApiKey = process.env.GOVEE_API_KEY
@@ -13,16 +14,9 @@ if (!goveeApiKey) throw new Error('Missing GOVEE_API_KEY in .env')
 
 app.use(express.json())
 
-// Simulated value for testing
-let simulatedGlucose = 100
+let simulatedGlucose = 250
 
-async function fetchAndParse(): Promise<{
-  timestamp: string
-  timestampMs: number
-  value: number
-  trend: string
-  source: string
-}[]> {
+async function fetchAndParse() {
   if (TESTING) {
     const now = new Date().toISOString()
     return [
@@ -36,12 +30,12 @@ async function fetchAndParse(): Promise<{
     ]
   }
 
-  const response = await fetch(nightscoutUrl!)
+  const response = await fetch(nightscoutUrl)
   const text = await response.text()
   const lines = text.trim().split('\r\n')
 
   return lines.map((line) => {
-    const [date, ms, value, trend, source] = line.split('\t').map((x) => x.replace(/^"|"$/g, ''))
+    const [date, ms, value, trend, source] = line.split('\t').map(x => x.replace(/^"|"$/g, ''))
     return {
       timestamp: date,
       timestampMs: Number(ms),
@@ -56,13 +50,21 @@ let alarmActive = false
 let lastAlarmTime = 0
 const LOW_THRESHOLD = 70
 const HIGH_THRESHOLD = 180
-const COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
+const COOLDOWN_MS = 10 * 60 * 1000
+
+const LAMPE_BETT = {
+  device: 'D7:B0:60:74:F4:DB:FB:6A',
+  sku: 'H6008'
+};
 
 setInterval(async () => {
   try {
+    const now = new Date()
+    const currentHour = now.getHours()
+    console.log("[TIME] Current hour: " + currentHour)
+    if (currentHour >= 8) return
     const data = await fetchAndParse()
     const latest = data[0]
-    const now = Date.now()
 
     const value = latest.value
     const isLow = value < LOW_THRESHOLD
@@ -98,41 +100,42 @@ setInterval(async () => {
   } catch (err) {
     console.error('Error during Nightscout check:', err)
   }
-}, 60 * 1000)
+}, 10 * 1000)
 
-function triggerAlarm(reason: string, value: number, timestamp: string) {
+function triggerAlarm(reason, value, timestamp) {
   console.warn(`[ALARM] ${reason}: ${value} mg/dL at ${timestamp}`)
-  turnOnGoveeDevice('D7:B0:60:74:F4:DB:FB:6A', 'H6008') // Bed lamp
+  turnOnGoveeDevice('D7:B0:60:74:F4:DB:FB:6A', 'H6008')
 }
 
-// Govee: Turn on lamp
-async function turnOnGoveeDevice(device: string, model: string) {
+async function turnOnGoveeDevice() {
   try {
     const response = await fetch('https://openapi.api.govee.com/router/api/v1/device/control', {
-      method: 'PUT',
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Govee-API-Key': goveeApiKey as string
+        'Govee-API-Key': goveeApiKey
       },
       body: JSON.stringify({
-        device,
-        model,
-        capability: {
-          type: 'devices.capabilities.on_off',
-          instance: 'powerSwitch',
-          value: 1
+        requestId: 'turn-on-lampe-bett',
+        payload: {
+          device: LAMPE_BETT.device,
+          sku: LAMPE_BETT.sku,
+          capability: {
+            type: 'devices.capabilities.on_off',
+            instance: 'powerSwitch',
+            value: 1 // 1 = an, 0 = aus
+          }
         }
       })
-    })
+    });
 
-    const result = await response.json()
-    console.log(`[GOVEE] Lamp ${device} turned on:`, result)
+    const result = await response.json();
+    console.log('[GOVEE] Antwort:', result);
   } catch (err) {
-    console.error('[GOVEE] Error turning on the lamp:', err)
+    console.error('[GOVEE] Fehler:', err.message);
   }
 }
 
-// API to simulate glucose value (only in TESTING mode)
 app.post('/simulate', (req, res) => {
   if (!TESTING) return res.status(403).send('Simulation only available in testing mode.')
   const newValue = Number(req.body.value)
@@ -142,13 +145,12 @@ app.post('/simulate', (req, res) => {
   res.send({ success: true, value: simulatedGlucose })
 })
 
-// List all Govee devices
 app.get('/api/govee/devices', async (req, res) => {
   try {
     const response = await fetch('https://openapi.api.govee.com/router/api/v1/user/devices', {
       method: 'GET',
       headers: {
-        'Govee-API-Key': goveeApiKey as string
+        'Govee-API-Key': goveeApiKey
       }
     })
 

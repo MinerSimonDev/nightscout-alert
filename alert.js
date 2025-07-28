@@ -4,7 +4,7 @@ const fetch = require('node-fetch') // Install with `npm install node-fetch@2`
 
 const app = express()
 const port = 3000
-const TESTING = false // Toggle to false for production
+const TESTING = false // Toggle to true for simulation mode
 
 const nightscoutUrl = process.env.NIGHTSCOUT_API_URL
 const goveeApiKey = process.env.GOVEE_API_KEY
@@ -50,7 +50,8 @@ let alarmActive = false
 let lastAlarmTime = 0
 const LOW_THRESHOLD = 70
 const HIGH_THRESHOLD = 180
-const COOLDOWN_MS = 10 * 60 * 1000
+const COOLDOWN_MS_LOW = 30 * 60 * 1000        // 30 Minuten
+const COOLDOWN_MS_HIGH = 2.5 * 60 * 60 * 1000 // 2,5 Stunden
 
 const LAMPE_BETT = {
   device: 'D7:B0:60:74:F4:DB:FB:6A',
@@ -59,10 +60,11 @@ const LAMPE_BETT = {
 
 setInterval(async () => {
   try {
-    const now = new Date()
-    const currentHour = now.getHours()
-    console.log("[TIME] Current hour: " + currentHour)
+    const now = Date.now()
+    const currentHour = new Date().getHours()
+    console.log("[TIME] Current hour:", currentHour)
     if (currentHour >= 8) return
+
     const data = await fetchAndParse()
     const latest = data[0]
 
@@ -83,6 +85,7 @@ setInterval(async () => {
     }
 
     const reason = isLow ? 'Low' : 'High'
+    const cooldown = isLow ? COOLDOWN_MS_LOW : COOLDOWN_MS_HIGH
 
     if (!alarmActive) {
       alarmActive = true
@@ -90,7 +93,7 @@ setInterval(async () => {
       triggerAlarm(reason, value, latest.timestamp)
     } else {
       const timeSinceLastAlarm = now - lastAlarmTime
-      if (timeSinceLastAlarm >= COOLDOWN_MS) {
+      if (timeSinceLastAlarm >= cooldown) {
         lastAlarmTime = now
         triggerAlarm(reason, value, latest.timestamp)
       } else {
@@ -104,7 +107,7 @@ setInterval(async () => {
 
 function triggerAlarm(reason, value, timestamp) {
   console.warn(`[ALARM] ${reason}: ${value} mg/dL at ${timestamp}`)
-  turnOnGoveeDevice('D7:B0:60:74:F4:DB:FB:6A', 'H6008')
+  turnOnGoveeDevice()
 }
 
 async function turnOnGoveeDevice() {
@@ -123,7 +126,7 @@ async function turnOnGoveeDevice() {
           capability: {
             type: 'devices.capabilities.on_off',
             instance: 'powerSwitch',
-            value: 1 // 1 = an, 0 = aus
+            value: 1
           }
         }
       })
